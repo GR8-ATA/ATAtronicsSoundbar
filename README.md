@@ -1,6 +1,6 @@
 # ATAtronicsSoundbar
 
-This first updarey contains the working soundbar code with all features locked in.
+This first update contains the working soundbar code with all features locked in.
 
 * 5 mins Auto shut down
 * internal battery sensor and Auto charging

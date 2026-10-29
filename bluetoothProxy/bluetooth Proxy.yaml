@@ -1,0 +1,641 @@
+# ==============================================================================
+# SECTION 1: GLOBAL HARDWARE DEFINITIONS AND LIFE-CYCLE STARTUP TRIGGERS
+# ==============================================================================
+substitutions:
+  name: "volume-controller-v1-esp32s3"
+
+esphome:
+  name: ${name}
+  on_boot:
+    priority: 600
+    then:
+      - lambda: |-
+          id(hardware_mute_line).turn_on();
+          id(system_power).turn_off();
+          id(refresh_rgb_hardware).execute();
+
+# ==============================================================================
+# SECTION 2: SILICON CORE ARCHITECTURE AND CHIP FLASH MEMORY ALLOCATIONS
+# ==============================================================================
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: arduino
+  variant: esp32s3
+  flash_size: 16MB
+
+# ==============================================================================
+# SECTION 3: SYSTEM CONSOLE LOGGING AND WEB ENGINE PARAMETERS
+# ==============================================================================
+logger:
+  level: INFO
+
+web_server:
+  port: 80
+  version: 2
+
+api:
+
+mdns:
+  disabled: false
+
+# ==============================================================================
+# SECTION 4: WI-FI NETWORK PROFILES AND HOTSPOT RECOVERY RAMP ARCHITECTURE
+# ==============================================================================
+wifi:
+  fast_connect: true
+  reboot_timeout: 0s
+  networks:
+    - ssid: "EE-Z9CX56"
+      password: "Jhgb3m9mFLFTgk"
+    - ssid: "GR8 ATA"
+      password: "GREAT--ATA"
+    - ssid: "MEH WIFI"
+  ap:
+    ssid: "5.1 Preamp Backup Hotspot"
+    password: "optional_password"
+  on_connect:
+    then:
+      - script.execute: refresh_rgb_hardware
+  on_disconnect:
+    then:
+      - script.execute: refresh_rgb_hardware
+
+# ==============================================================================
+# SECTION 5: PHYSICAL I2C DATA SERIAL BUS DEFINITIONS (PREAMP & LOCAL OLED)
+# ==============================================================================
+i2c:
+  id: bus_a
+  sda: GPIO8
+  scl: GPIO9
+  scan: false
+  frequency: 400khz
+  timeout: 10ms
+
+# ==============================================================================
+# SECTION 6: CHASSIS STATUS RGB PIXEL TRANSITION ACTIONS
+# ==============================================================================
+light:
+  - platform: esp32_rmt_led_strip
+    id: board_status_rgb
+    pin: GPIO48
+    num_leds: 1
+    rgb_order: GRB
+    chipset: WS2812
+    name: "Internal Status LED"
+    effects:
+      - strobe:
+          name: "Wifi Alert Flash"
+          colors:
+            - state: true
+              red: 1.0
+              green: 0.0
+              blue: 1.0
+              duration: 200ms
+            - state: false
+              red: 0.0
+              green: 0.0
+              blue: 0.0
+              duration: 200ms
+      - pulse:
+          name: "Charging Pulse"
+          transition_length: 800ms
+          update_interval: 800ms
+
+# ==============================================================================
+# SECTION 7: STATIC MEMORY VOLATILE VARIABLES STORAGE BANKS
+# ==============================================================================
+globals:
+  - id: mode_trim
+    type: "std::array<float, 6>"
+    restore_value: no
+    initial_value: |-
+      {0,0,0,0,0,0}
+  - id: current_profile_text
+    type: std::string
+    initial_value: '"Movie"'
+  - id: audio_source_text
+    type: std::string
+    initial_value: '"HDMI 1"'
+  - id: internal_battery_voltage
+    type: float
+    initial_value: '4.2'
+  - id: power_button_locked
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: splash_screen_text
+    type: std::string
+    restore_value: false
+    initial_value: '"ATAvations"'
+  - id: wake_splash_timestamp
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+  - id: ir_hold_state
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: button_hold_state
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: system_is_shutting_down
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: led_flashing_active
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+# ==============================================================================
+# SECTION 8: HOME ASSISTANT WEB PANEL SLIDER CARD REGISTER CONTROLLERS
+# ==============================================================================
+number:
+  - platform: template
+    name: "volume"
+    id: vol
+    min_value: 0
+    max_value: 100
+    step: 1
+    initial_value: 50
+    optimistic: true
+    restore_value: true
+    on_value: 
+      then:
+        - lambda: "id(apply_volume).execute();"
+
+  - platform: template
+    name: "Stereo Mode Sub Bass Offset"
+    id: stereo_sub_override
+    min_value: -30
+    max_value: 30
+    step: 1
+    initial_value: 0
+    optimistic: true
+    restore_value: true
+    on_value: 
+      then:
+        - lambda: "id(apply_volume).execute();"
+
+  - platform: template
+    name: "Status LED Brightness"
+    id: led_brightness_slider
+    min_value: 0.05
+    max_value: 1.0
+    step: 0.05
+    initial_value: 0.3
+    optimistic: true
+    restore_value: true
+    on_value:
+      then:
+        - script.execute: refresh_rgb_hardware
+
+# ==============================================================================
+# SECTION 9: WEB VIEW CUSTOM TEXT ENTRY SLOTS
+# ==============================================================================
+text:
+  - platform: template
+    name: "Custom Startup Splash Text"
+    id: dynamic_splash_input
+    optimistic: true
+    mode: text
+    restore_value: true
+    initial_value: "ATAvations"
+    on_value: 
+      then:
+        - lambda: "id(splash_screen_text) = x;"
+
+# ==============================================================================
+# SECTION 10: ACOUSTIC PROFILE EQUALIZATION DROPDOWN CONTROLLERS
+# ==============================================================================
+select:
+  - platform: template
+    name: "listening mode"
+    id: listening_mode
+    optimistic: true
+    restore_value: true
+    options: 
+      - "Movie"
+      - "Music"
+      - "Night"
+      - "Stereo"
+    initial_option: "Movie"
+    on_value:
+      then: 
+        - lambda: |-
+            id(current_profile_text) = x;
+            if (x == "Movie") {
+              id(mode_trim) = std::array<float, 6>{0, 0, 0, 0, 2, 2};
+            } else if (x == "Music") {
+              id(mode_trim) = std::array<float, 6>{0, 0, 6, 8, 10, 10};
+            } else if (x == "Night") {
+              id(mode_trim) = std::array<float, 6>{6, 6, 4, 20, 12, 12};
+            } else if (x == "Stereo") {
+              id(mode_trim) = std::array<float, 6>{0, 0, 79, 79, 79, 79};
+            }
+            if (id(system_power).state) { id(apply_volume).execute(); }
+
+# ==============================================================================
+# SECTION 11: OVER-THE-AIR BLUETOOTH PROXY STATE TRANSMISSION CHANNELS
+# ==============================================================================
+text_sensor:
+  - platform: homeassistant
+    id: proxy_live_activity
+    entity_id: sensor.preamp_s3_bt_proxy_state
+    initial_value: "SEARCHING"
+# ==============================================================================
+# SECTION 12: LOGARITHMIC VOLUME CALCULATIONS AND AUTOMATED SCRIPT ENGINES
+# ==============================================================================
+script:
+  - id: apply_volume
+    mode: queued
+    max_runs: 10
+    then:
+      - lambda: |-
+          int master_db = (100 - (int)id(vol).state) * 79 / 100;
+          uint8_t ch_tens[] = {0x10, 0x30, 0x50, 0x70, 0x90, 0xb0};
+          uint8_t ch_ones[] = {0x00, 0x20, 0x40, 0x60, 0x80, 0xa0};
+          for(int i=0; i<6; i++) {
+            int total_attenuation = master_db + (int)id(mode_trim)[i];
+            if (id(current_profile_text) == "Stereo" && i == 3) {
+              total_attenuation = master_db + (int)id(stereo_sub_override).state;
+            }
+            if (total_attenuation > 79) total_attenuation = 79;
+            if (total_attenuation < 0) total_attenuation = 0;
+            uint8_t data[] = {
+              (uint8_t)(ch_tens[i] | (total_attenuation / 10)),
+              (uint8_t)(ch_ones[i] | (total_attenuation % 10))
+            };
+            id(bus_a).write(0x44, data, 2);
+          }
+
+  - id: auto_shutdown_timer
+    mode: restart
+    then:
+      - delay: 300s
+      - switch.turn_off: system_power
+
+  - id: ir_watchdog_timeout
+    mode: restart
+    then:
+      - delay: 550ms
+      - lambda: "id(ir_hold_state) = 0;"
+
+  - id: unlock_power_button
+    then:
+      - delay: 1500ms
+      - lambda: "id(power_button_locked) = false;"
+
+  - id: refresh_rgb_hardware
+    mode: restart
+    then:
+      - lambda: |-
+          auto call = id(board_status_rgb).make_call();
+          if (!id(led_master_switch).state) {
+            call.set_state(false);
+            call.perform();
+            return;
+          }
+          call.set_state(true);
+          call.set_brightness(id(led_brightness_slider).state);
+          auto active_wifi = esphome::wifi::global_wifi_component;
+          if (!active_wifi->is_connected()) {
+            call.set_effect("Wifi Alert Flash");
+            call.perform();
+            return;
+          }
+          call.set_effect("None");
+          if (id(system_power).state) {
+            call.set_rgb(0.0, 1.0, 0.0);
+          } else {
+            if (id(battery_charger_switch).state) {
+              call.set_effect("Charging Pulse");
+            } else {
+              call.set_rgb(1.0, 0.0, 0.0);
+            }
+          }
+          call.perform();
+
+  - id: trigger_ui_flash
+    mode: restart
+    then:
+      - lambda: |-
+          if (!id(led_master_switch).state) return;
+          auto call = id(board_status_rgb).make_call();
+          call.set_state(true);
+          call.set_brightness(id(led_brightness_slider).state);
+          call.set_rgb(1.0, 0.65, 0.0);
+          call.perform();
+      - delay: 140ms
+      - script.execute: refresh_rgb_hardware
+
+# ==============================================================================
+# SECTION 13: POWER SEQUENCING RELAY TARGETS AND LOGIC INTERLOCK GATES
+# ==============================================================================
+switch:
+  - platform: gpio
+    pin: GPIO11
+    id: power_ssr
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    pin: GPIO12
+    id: hardware_mute_line
+    restore_mode: ALWAYS_ON
+
+  - platform: gpio
+    pin: GPIO13
+    id: battery_charger_switch
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - script.execute: refresh_rgb_hardware
+    on_turn_off:
+      - script.execute: refresh_rgb_hardware
+
+  - platform: template
+    name: "Status LED Master Power"
+    id: led_master_switch
+    optimistic: true
+    restore_mode: ALWAYS_ON
+    on_turn_on:
+      - script.execute: refresh_rgb_hardware
+    on_turn_off:
+      - script.execute: refresh_rgb_hardware
+
+  - platform: template
+    name: "system master power"
+    id: system_power
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      then:
+        - switch.turn_off: battery_charger_switch
+        - delay: 50ms
+        - lambda: |-
+            if (id(internal_battery_voltage) <= 3.3f) {
+              id(system_power).turn_off();
+              id(battery_charger_switch).turn_on();
+              return;
+            }
+        - switch.turn_on: hardware_mute_line
+        - delay: 100ms
+        - switch.turn_on: power_ssr
+        - switch.turn_on: battery_mux_gate
+        - script.execute: refresh_rgb_hardware
+        - delay: 200ms
+        - lambda: "id(apply_volume).execute();"
+        - switch.turn_off: hardware_mute_line
+        - script.execute: auto_shutdown_timer
+    on_turn_off:
+      then:
+        - switch.turn_on: hardware_mute_line
+        - lambda: "id(system_is_shutting_down) = true;"
+        - script.stop: auto_shutdown_timer
+        - delay: 2500ms
+        - switch.turn_off: power_ssr
+        - switch.turn_off: battery_mux_gate
+        - lambda: "id(system_is_shutting_down) = false;"
+        - script.execute: refresh_rgb_hardware
+
+  - platform: template
+    id: battery_mux_gate
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: template
+    id: analog_mux_switch
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+
+# ==============================================================================
+# SECTION 14: TELEMETRY CLOCK BROADCASTS AND CONTINUOUS SWEEP TIMERS
+# ==============================================================================
+interval:
+  - interval: 10s
+    then: 
+      - lambda: |-
+          auto active_wifi = esphome::wifi::global_wifi_component;
+          if (active_wifi->is_connected()) {
+            std::string ip_str = esphome::network::get_use_address();
+            ESP_LOGI("network_diagnostics", "Live Preamp IP Address: http://%s/", ip_str.c_str());
+          }
+
+  - interval: 440ms
+    then:
+      - lambda: |-
+          if (!id(system_power).state) return;
+          if (id(ir_hold_state) == 1 || id(button_hold_state) == 1) {
+            if (id(vol).state < 100) { id(vol).make_call().number_increment(1.0).perform(); }
+          } else if (id(ir_hold_state) == 2 || id(button_hold_state) == 2) {
+            if (id(vol).state > 0) { id(vol).make_call().number_decrement(1.0).perform(); }
+          }
+# ==============================================================================
+# SECTION 15: TSOP INFRARED SAMPLING LOOPS AND DECODER WATCHDOG INTEGERS
+# ==============================================================================
+remote_receiver:
+  pin:
+    number: GPIO7
+    inverted: true
+  idle: 25ms
+  dump: [samsung, raw]
+  on_samsung:
+    - then:
+        - lambda: |-
+            if (x.data == 0xE0E06798 || x.data == 0xE0E040BF) {
+              if (!id(power_button_locked)) {
+                id(power_button_locked) = true;
+                id(system_power).toggle();
+                id(unlock_power_button).execute();
+                id(trigger_ui_flash).execute();
+              }
+              return;
+            }
+            if (!id(system_power).state) return;
+            
+            if (x.data == 0xE0E0E01F) {
+              id(ir_hold_state) = 1;
+              id(ir_watchdog_timeout).execute();
+              id(trigger_ui_flash).execute();
+            }
+            else if (x.data == 0xE0E0D02F) {
+              id(ir_hold_state) = 2;
+              id(ir_watchdog_timeout).execute();
+              id(trigger_ui_flash).execute();
+            }
+            else if (x.data == 0xFFFFFFFF || x.data == 0x0) {
+              if (id(ir_hold_state) != 0) { id(ir_watchdog_timeout).execute(); }
+            }
+            else if (x.data == 0xE0E048B7) {
+              auto call = id(listening_mode).make_call();
+              if (id(current_profile_text) == "Movie") { call.set_option("Music"); }
+              else if (id(current_profile_text) == "Music") { call.set_option("Night"); }
+              else if (id(current_profile_text) == "Night") { call.set_option("Stereo"); }
+              else { call.set_option("Movie"); }
+              call.perform();
+              id(trigger_ui_flash).execute();
+            }
+            else if (x.data == 0xE0E008F7) {
+              auto call = id(listening_mode).make_call();
+              if (id(current_profile_text) == "Stereo") { call.set_option("Night"); }
+              else if (id(current_profile_text) == "Night") { call.set_option("Music"); }
+              else if (id(current_profile_text) == "Music") { call.set_option("Movie"); }
+              else { call.set_option("Stereo"); }
+              call.perform();
+              id(trigger_ui_flash).execute();
+            }
+
+  on_raw:
+    - then:
+        - lambda: |-
+            if (!id(system_power).state || id(ir_hold_state) == 0) return;
+            if (x.size() >= 4 && x.at(0) >= 250 && x.at(0) <= 380) {
+              id(ir_watchdog_timeout).execute();
+              static uint32_t last_ui_flash = 0;
+              uint32_t now = millis();
+              if (now - last_ui_flash >= 240) {
+                id(trigger_ui_flash).execute();
+                last_ui_flash = now;
+              }
+            }
+
+# ==============================================================================
+# SECTION 16: ADC WATCHDOG MONITORS (AUDIO TRACKS, CELLS, & CHANNELS MATRIX)
+# ==============================================================================
+sensor:
+  - platform: adc
+    pin: GPIO1
+    id: battery_sensor_analog
+    update_interval: 5s
+    attenuation: 12db
+    on_raw_value:
+      then:
+        - lambda: |-
+            float cell_volts = id(battery_sensor_analog).get_raw_state() * 3.3f * 2.0f;
+            id(internal_battery_voltage) = cell_volts;
+
+  - platform: adc
+    pin: GPIO2
+    id: audio_watchdog_analog
+    update_interval: 2s
+    attenuation: 12db
+    on_raw_value:
+      then:
+        - lambda: |-
+            if (x > 0.12f) { id(auto_shutdown_timer).stop(); }
+            else { if (id(system_power).state) { id(auto_shutdown_timer).execute(); } }
+
+  - platform: adc
+    pin: GPIO4
+    id: source_matrix_analog
+    update_interval: 2s
+    attenuation: 12db
+    on_raw_value:
+      then:
+        - lambda: |-
+            if (!id(system_power).state) return;
+            float reading_volts = id(source_matrix_analog).get_raw_state() * 3.3f;
+            std::string detected_src = "NO SRC";
+            if (reading_volts > 2.6f) { detected_src = "HDMI 1"; }
+            else if (reading_volts > 1.7f && reading_volts <= 2.6f) { detected_src = "OPTICAL"; }
+            else if (reading_volts > 0.8f && reading_volts <= 1.7f) { detected_src = "COAXIAL"; }
+            else if (reading_volts > 0.2f && reading_volts <= 0.8f) { detected_src = "BLUETOOTH/USB"; }
+            if (detected_src != id(audio_source_text)) { id(audio_source_text) = detected_src; }
+
+# ==============================================================================
+# SECTION 17: CHASSIS TACTILE BUTTONS AND MECHANICAL FILTERS MAPS
+# ==============================================================================
+binary_sensor:
+  - platform: gpio
+    pin: {number: GPIO15, mode: INPUT_PULLUP, inverted: true}
+    name: "vol up"
+    id: b_up
+    filters: 
+      - delayed_on: 15ms
+      - delayed_off: 15ms
+    on_press:
+      then:
+        - lambda: "id(button_hold_state) = 1;"
+        - script.execute: trigger_ui_flash
+    on_release:
+      then:
+        - lambda: "id(button_hold_state) = 0;"
+
+  - platform: gpio
+    pin: {number: GPIO16, mode: INPUT_PULLUP, inverted: true}
+    name: "vol down"
+    id: b_down
+    filters: 
+      - delayed_on: 15ms
+      - delayed_off: 15ms
+    on_press:
+      then:
+        - lambda: "id(button_hold_state) = 2;"
+        - script.execute: trigger_ui_flash
+    on_release:
+      then:
+        - lambda: "id(button_hold_state) = 0;"
+
+  - platform: gpio
+    pin: {number: GPIO14, mode: INPUT_PULLUP, inverted: true}
+    name: "Physical Hardware Power Button"
+    on_press:
+      then:
+        - switch.toggle: system_power
+        - script.execute: trigger_ui_flash
+
+# ==============================================================================
+# SECTION 18: FONTS REGISTRIES AND ADAPTIVE FRONT PANEL DISPLAY LAYOUTS
+# ==============================================================================
+font:
+  - file: "gfonts://Ubuntu"
+    id: f_small
+    size: 11
+  - file: "gfonts://Ubuntu"
+    id: f_medium
+    size: 20
+  - file: "gfonts://Ubuntu"
+    id: f_large
+    size: 36
+
+display:
+  - platform: ssd1306_i2c
+    model: ssd1306 128x64
+    address: 0x3c
+    bus_id: bus_a
+    lambda: |-
+      if (id(system_is_shutting_down)) {
+        it.fill(COLOR_OFF);
+        it.print(it.get_width() / 2, it.get_height() / 2, id(f_medium), TextAlign::CENTER, id(splash_screen_text).c_str());
+        return;
+      }
+      if (!id(system_power).state) {
+        it.fill(COLOR_OFF);
+        return;
+      }
+      if (millis() - id(wake_splash_timestamp) < 3500) {
+        it.fill(COLOR_OFF);
+        it.print(it.get_width() / 2, it.get_height() / 2, id(f_medium), TextAlign::CENTER, id(splash_screen_text).c_str());
+        return;
+      }
+      if (id(vol).state >= 100) {
+        it.fill(COLOR_OFF);
+        it.print(it.get_width() / 2, it.get_height() / 2, id(f_large), TextAlign::CENTER, "MAX");
+      } else if (id(vol).state <= 0) {
+        it.fill(COLOR_OFF);
+        it.print(it.get_width() / 2, it.get_height() / 2, id(f_large), TextAlign::CENTER, "MIN");
+      } else {
+        if (id(audio_source_text) == "BLUETOOTH/USB") {
+          it.printf(0, 2, id(f_small), "BT: %s", id(proxy_live_activity).c_str()); 
+        } else {
+          it.print(0, 2, id(f_small), id(audio_source_text).c_str());
+        }
+        it.rectangle(0, 20, 22, 10);
+        it.filled_rectangle(22, 23, 2, 4);
+        int bat_fill = (int)((id(internal_battery_voltage) - 3.2f) / 1.0f * 18.0f);
+        if (bat_fill > 18) bat_fill = 18;
+        if (bat_fill > 0) it.filled_rectangle(2, 22, bat_fill, 6);
+        it.printf(0, 48, id(f_small), "%s", id(current_profile_text).c_str());
+        it.printf(92, 32, id(f_large), TextAlign::CENTER, "%0.0f", id(vol).state);
+      }
